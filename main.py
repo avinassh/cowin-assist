@@ -1,17 +1,18 @@
 import json
 import logging
 import re
+import time
 from enum import Enum
 from typing import List
 from datetime import datetime
 
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, Bot
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, CallbackQueryHandler
 from jinja2 import Template
 from peewee import SqliteDatabase, Model, DateTimeField, CharField, FixedCharField, IntegerField, BooleanField
 
 from secrets import TELEGRAM_BOT_TOKEN
-from cowinapi import CoWinAPI
+from cowinapi import CoWinAPI, VaccinationCenter
 
 PINCODE_PREFIX_REGEX = r'^\s*(pincode)?\s*(?P<pincode_mg>\d{6})\s*'
 AGE_BUTTON_REGEX = r'^age: (?P<age_mg>\d+)'
@@ -29,33 +30,38 @@ CoWinAPIObj = CoWinAPI()
 db = SqliteDatabase('users.db')
 
 
+class AgeRangePref(Enum):
+    Unknown = 0
+    MinAge18 = 1
+    MinAge45 = 2
+    MinAgeAny = 3
+
+
+class EnumField(IntegerField):
+
+    def __init__(self, choices, *args, **kwargs):
+        super(IntegerField, self).__init__(*args, **kwargs)
+        self.choices = choices
+
+    def db_value(self, value) -> int:
+        return value.value
+
+    def python_value(self, value):
+        return self.choices(value)
+
+
 # storage classes
 class User(Model):
     created_at = DateTimeField(default=datetime.now)
     updated_at = DateTimeField(default=datetime.now)
     telegram_id = CharField(max_length=220, unique=True)
     chat_id = CharField(max_length=220)
-    pincode = FixedCharField(max_length=6, null=True)
-    age_pref = IntegerField(null=True)
+    pincode = FixedCharField(max_length=6, null=True, index=True)
+    age_limit = EnumField(choices=AgeRangePref, default=AgeRangePref.Unknown)
     enabled = BooleanField(default=True)
 
     class Meta:
         database = db
-
-
-class AgeRangePref(Enum):
-    Min0 = 1
-    Min18 = 18
-    Min45 = 45
-
-
-def get_enum_by_string(age_pref: str) -> AgeRangePref:
-    if age_pref == "18":
-        return AgeRangePref.Min18
-    elif age_pref == "45":
-        return AgeRangePref.Min45
-    else:
-        return AgeRangePref.Min0
 
 
 def get_main_buttons() -> List[InlineKeyboardButton]:
@@ -68,9 +74,9 @@ def get_main_buttons() -> List[InlineKeyboardButton]:
 def get_age_kb() -> InlineKeyboardMarkup:
     keyboard = [
         [
-            InlineKeyboardButton("18-45", callback_data='age: 18'),
-            InlineKeyboardButton("45+", callback_data='age: 45'),
-            InlineKeyboardButton("Both", callback_data='age: 1'),
+            InlineKeyboardButton("18+", callback_data='age: 1'),
+            InlineKeyboardButton("45+", callback_data='age: 2'),
+            InlineKeyboardButton("Both", callback_data='age: 3'),
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -117,7 +123,7 @@ def check_if_preferences_are_set(update: Update, _: CallbackContext) -> User:
     user: User
     user, _ = User.get_or_create(telegram_id=update.effective_user.id,
                                  defaults={'chat_id': update.effective_chat.id})
-    if user.age_pref is None:
+    if user.age_limit is None or user.age_limit == AgeRangePref.Unknown:
         update.effective_chat.send_message("select age pref", reply_markup=get_age_kb())
         return
     if user.pincode is None:
@@ -132,26 +138,35 @@ def setup_alert_command(update: Update, ctx: CallbackContext) -> None:
         return
 
 
+def get_available_centers_by_pin(pincode: str) -> List[VaccinationCenter]:
+    vaccination_centers = CoWinAPIObj.calender_by_pin(pincode, CoWinAPI.today())
+    if vaccination_centers:
+        vaccination_centers = [vc for vc in vaccination_centers if vc.has_available_sessions()]
+    return vaccination_centers
+
+
+def get_formatted_message(centers: List[VaccinationCenter]) -> str:
+    # TODO: Fix this shit
+    template = """Following slots are available:
+{% for c in centers %}
+*{{ c.name }}* {%- if c.fee_type == 'Paid' %}*(Paid)*{%- endif %}:{% for s in c.get_available_sessions() %}
+    • {{s.date}}: {{s.capacity}}{% endfor %}
+{% endfor %}"""
+    tm = Template(template)
+    return tm.render(centers=centers)
+
+
 def check_slots_command(update: Update, ctx: CallbackContext) -> None:
     user = check_if_preferences_are_set(update, ctx)
     if not user:
         return
 
-    pincode = user.pincode
-    vaccination_centers = CoWinAPIObj.calender_by_pin(pincode, CoWinAPI.today())
-    if vaccination_centers:
-        vaccination_centers = [vc for vc in vaccination_centers if vc.has_available_sessions()]
+    vaccination_centers = get_available_centers_by_pin(user.pincode)
     if not vaccination_centers:
         update.effective_chat.send_message("sorry, not slots available")
         return
-    # TODO: Fix this shit
-    template = """Following slots are available:
-{% for c in centers %}
-*{{ c }}*:{% for s in c.get_available_sessions() %}
-    • {{s.date}}: {{s.capacity}}{% endfor %}
-{% endfor %}"""
-    tm = Template(template)
-    msg = tm.render(centers=vaccination_centers)
+
+    msg: str = get_formatted_message(vaccination_centers)
     update.effective_chat.send_message(msg, parse_mode='markdown')
     return
 
@@ -175,7 +190,7 @@ def set_age_preference(update: Update, ctx: CallbackContext) -> None:
     user: User
     user, _ = User.get_or_create(telegram_id=update.effective_user.id,
                                  defaults={'chat_id': update.effective_chat.id})
-    user.age_pref = int(age_pref)
+    user.age_limit = AgeRangePref(int(age_pref))
     user.updated_at = datetime.now()
     user.save()
 
@@ -197,12 +212,24 @@ def set_pincode(update: Update, ctx: CallbackContext) -> None:
     user.updated_at = datetime.now()
     user.save()
 
-    if user.age_pref:
+    if user.age_limit:
         update.effective_chat.send_message(F"Pincode is set to {pincode}",
                                            reply_markup=InlineKeyboardMarkup([[*get_main_buttons()]]))
     else:
         update.effective_chat.send_message("Pincode is set. Please set the age preference to proceed next",
                                            reply_markup=get_age_kb())
+
+
+def background_worker():
+    # query db
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    for distinct_user in User.select(User.pincode).where(User.pincode.is_null(False)).distinct():
+        vaccination_centers = get_available_centers_by_pin(distinct_user.pincode)
+        if not vaccination_centers:
+            continue
+        msg: str = get_formatted_message(vaccination_centers)
+        for user in User.select().where(User.pincode == distinct_user.pincode):
+            bot.send_message(chat_id=user.chat_id, text=msg, parse_mode='markdown')
 
 
 def main() -> None:
@@ -225,6 +252,13 @@ def main() -> None:
     # Start the Bot
     updater.start_polling()
 
+    try:
+        while True:
+            background_worker()
+            time.sleep(60 * 15)
+            break
+    except Exception as e:
+        logger.exception("bg worker failed", exc_info=e)
     updater.idle()
 
 
