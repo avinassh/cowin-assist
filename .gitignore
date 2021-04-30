@@ -139,3 +139,4 @@ cython_debug/
 
 # api keys
 /secrets.py
+/users.db
