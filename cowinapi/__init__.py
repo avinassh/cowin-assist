@@ -42,7 +42,7 @@ class Session:
         return self.__str__()
 
     def is_available(self) -> bool:
-        return self.capacity > 1
+        return self.capacity > 0
 
     @staticmethod
     def from_json(data) -> "Session":
@@ -68,10 +68,13 @@ class VaccinationCenter:
         return self.__str__()
 
     def has_available_sessions(self) -> bool:
-        return len(self.get_available_sessions()) > 1
+        return len(self.get_available_sessions()) > 0
 
     def get_available_sessions(self) -> List[Session]:
         return [s for s in self.sessions if s.is_available()]
+
+    def get_available_sessions_by_age_limit(self, age_limit: int) -> List[Session]:
+        return [s for s in self.sessions if s.min_age_limit == age_limit]
 
     @staticmethod
     def from_json(data) -> "VaccinationCenter":
