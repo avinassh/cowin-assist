@@ -139,7 +139,8 @@ def start(update: Update, _: CallbackContext) -> None:
     msg = """Hey there!👋
 Welcome to CoWin Assist bot. 
 
-I will weekly check slots availability in your area and alert you when one becomes available. To start either click 🔔 'setup alert' or  🔍 'check open slots'.  ## noqa
+I will weekly check slots availability in your area and alert you when one becomes available. To start either click 
+🔔 *Setup Alert* or 🔍 *Check Open Slots*.
 
 If you are a first time user I will ask for your age and pincode."""
     update.message.reply_text(msg, reply_markup=get_main_keyboard(), parse_mode="markdown")
@@ -386,7 +387,7 @@ def set_pincode(update: Update, ctx: CallbackContext) -> None:
     user.deleted_at = None
     user.save()
 
-    msg: str = F"I have updated your pincode to {pincode}. If you'd like to change it, send a valid pincode "\
+    msg: str = F"I have updated your pincode to {pincode}. If you'd like to change it, send a valid pincode " \
                "any time to me."
     reply_markup: InlineKeyboardMarkup
     if user.age_limit is None or user.age_limit == AgeRangePref.Unknown:
@@ -534,6 +535,10 @@ def main() -> None:
     # connect and create tables
     db.connect()
     db.create_tables([User, ])
+    # create the required index
+    # TODO:
+    # User.add_index(User.enabled, User.pincode,
+    #                where=((User.enabled == True) & (User.pincode.is_null(False))))
 
     # initialise the handler
     updater = Updater(TELEGRAM_BOT_TOKEN)
