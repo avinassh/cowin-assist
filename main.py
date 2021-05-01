@@ -310,7 +310,7 @@ def filter_centers_by_age_limit(age_limit: AgeRangePref, centers: List[Vaccinati
 
 
 def get_message_header(user: User) -> str:
-    return F"Following slots are available (pincode: {user.pincode}, age limit: {user.age_limit})\n"
+    return F"Following slots are available (pincode: {user.pincode}, age preference: {user.age_limit})\n"
 
 
 def check_slots_command(update: Update, ctx: CallbackContext) -> None:
@@ -322,7 +322,7 @@ def check_slots_command(update: Update, ctx: CallbackContext) -> None:
     vaccination_centers = filter_centers_by_age_limit(user.age_limit, vaccination_centers)
     if not vaccination_centers:
         update.effective_chat.send_message(
-            F"Sorry, no free slots available (pincode: {user.pincode}, age limit: {user.age_limit})")
+            F"Sorry, no free slots available (pincode: {user.pincode}, age preference: {user.age_limit})")
         return
 
     msg: str = get_formatted_message(centers=vaccination_centers, age_limit=user.age_limit)
