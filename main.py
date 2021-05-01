@@ -20,7 +20,7 @@ from peewee import SqliteDatabase, Model, DateTimeField, CharField, FixedCharFie
 from cowinapi import CoWinAPI, VaccinationCenter
 from secrets import TELEGRAM_BOT_TOKEN, DEVELOPER_CHAT_ID
 
-PINCODE_PREFIX_REGEX = r'^\s*(pincode)?\s*(?P<pincode_mg>\d{6})\s*'
+PINCODE_PREFIX_REGEX = r'^\s*(pincode)?\s*(?P<pincode_mg>\d+)\s*'
 AGE_BUTTON_REGEX = r'^age: (?P<age_mg>\d+)'
 CMD_BUTTON_REGEX = r'^cmd: (?P<cmd_mg>.+)'
 DISABLE_TEXT_REGEX = r'\s*disable|stop|pause\s*'
@@ -108,7 +108,7 @@ def sanitise_msg(msg: str) -> str:
 def get_main_buttons() -> List[InlineKeyboardButton]:
     return [
         InlineKeyboardButton("🔔 Setup Alert", callback_data='cmd: setup_alert'),
-        InlineKeyboardButton("💼 Check Open Slots", callback_data='cmd: check_slots'),
+        InlineKeyboardButton("🔍 Check Open Slots", callback_data='cmd: check_slots'),
     ]
 
 
@@ -136,10 +136,13 @@ def get_main_keyboard() -> InlineKeyboardMarkup:
 
 
 def start(update: Update, _: CallbackContext) -> None:
-    update.message.reply_text(
-        f"Hey {update.effective_user.mention_markdown_v2()}! Welcome to Cowin Assist Bot\n\n" + get_help_text_short(),
-        reply_markup=get_main_keyboard(), parse_mode="markdown"
-    )
+    msg = """Hey there!👋
+Welcome to CoWin Assist bot. 
+
+I will weekly check slots availability in your area and alert you when one becomes available. To start either click 🔔 'setup alert' or  🔍 'check open slots'.  ## noqa
+
+If you are a first time user I will ask for your age and pincode."""
+    update.message.reply_text(msg, reply_markup=get_main_keyboard(), parse_mode="markdown")
 
 
 def cmd_button_handler(update: Update, ctx: CallbackContext) -> None:
@@ -166,11 +169,11 @@ def cmd_button_handler(update: Update, ctx: CallbackContext) -> None:
 
 
 def get_help_text_short() -> str:
-    return """This bot will help you to check current available slots in one week and also, send an alert as soon as a slot becomes available. To start, either click on "Setup Alert" or "Check Open Slots". For first time users, bot will ask for age preference and pincode."""  ## noqa
+    return """This bot will help you to check current available slots in one week and also, alert you when one becomes available. To start, either click on "Setup Alert" or "Check Open Slots". For first time users, bot will ask for age preference and pincode."""  ## noqa
 
 
 def get_help_text() -> str:
-    return """\n\n*Setup Alert*\nUse this to setup an alert, it will send a message as soon as a slot becomes available. Select the age preference and provide the area pincode of the vaccination center you would like to monitor. Do note that 18+ slots are monitored more often than 45+. Click on /pause to stop alerts and /resume to enable them back.\n\n*Check Open Slots*\nUse this to check the slots availability manually.\n\n*Age Preference*\nTo change age preference, click on /age\n\n*Pincode*\nClick on /pincode to change the pincode. Alternatively, you can send pincode any time and bot will update it."""  ## noqa
+    return """\n\n*Setup Alert*\nUse this to setup an alert, it will send a message as soon as a slot becomes available. Select the age preference and provide the area pincode of the vaccination center you would like to monitor. Do note that 18+ slots are monitored more often than 45+. Click on /pause to stop alerts and /resume to enable them back.\n\n*Check Open Slots*\nUse this to check the slots availability manually.\n\n*Age Preference*\nTo change age preference, click on /age\n\n*Pincode*\nClick on /pincode to change the pincode. Alternatively, you can send pincode any time and bot will update it.\n\n*Delete*\nClick on /delete if you would like delete all your information."""  ## noqa
 
 
 def help_handler(update: Update, ctx: CallbackContext):
@@ -213,7 +216,7 @@ def privacy_policy_handler(update: Update, _: CallbackContext):
 
 
 def age_command(update: Update, ctx: CallbackContext):
-    update.effective_chat.send_message("Select age preference", reply_markup=get_age_kb())
+    update.effective_chat.send_message("Select your age preference", reply_markup=get_age_kb())
     return
 
 
@@ -240,8 +243,8 @@ def setup_alert_command(update: Update, ctx: CallbackContext) -> None:
     user.enabled = True
     user.save()
 
-    msg = "I have setup alerts for you. "
-    msg_18 = "For age group 18+, as soon as a slot becomes available I will send a message. "
+    msg = "🔔 I have setup alerts for you. "
+    msg_18 = "For age group 18+, as soon as a slot becomes available I will send you a message. "
     msg_45 = "For age group 45+, I will check slots availability for every 15 minutes and send a message if they are " \
              "available. "
     if user.age_limit == AgeRangePref.MinAge18:
@@ -258,7 +261,7 @@ def disable_alert_command(update: Update, _: CallbackContext) -> None:
     user, _ = get_or_create_user(telegram_id=update.effective_user.id, chat_id=update.effective_chat.id)
     user.enabled = False
     user.save()
-    update.effective_chat.send_message("Alerts are disabled. Click on /resume to resume the alerts")
+    update.effective_chat.send_message("🔕 I have disabled the Alerts. Click on /resume to resume the alerts")
 
 
 def get_available_centers_by_pin(pincode: str) -> List[VaccinationCenter]:
@@ -325,7 +328,7 @@ def check_slots_command(update: Update, ctx: CallbackContext) -> None:
     vaccination_centers = filter_centers_by_age_limit(user.age_limit, vaccination_centers)
     if not vaccination_centers:
         update.effective_chat.send_message(
-            F"Sorry, no free slots available (pincode: {user.pincode}, age preference: {user.age_limit})")
+            F"Hey sorry, seems there are no free slots available (pincode: {user.pincode}, age preference: {user.age_limit})")
         return
 
     msg: str = get_formatted_message(centers=vaccination_centers, age_limit=user.age_limit)
@@ -359,19 +362,20 @@ def set_age_preference(update: Update, ctx: CallbackContext) -> None:
     user.save()
 
     if user.pincode:
-        update.effective_chat.send_message(F"Age preference has been set to {user.age_limit}",
+        update.effective_chat.send_message(F"I have set your age preference to {user.age_limit}",
                                            reply_markup=InlineKeyboardMarkup([[*get_main_buttons()]]))
     else:
         update.effective_chat.send_message(
-            F"Age preference has been set to {user.age_limit}. Please enter your pincode to proceed")
+            F"I have set your age preference to {user.age_limit}. Please enter your pincode to proceed")
 
 
 def set_pincode(update: Update, ctx: CallbackContext) -> None:
     pincode = ctx.match.groupdict().get("pincode_mg")
     if not pincode:
         return
+    pincode = pincode.strip()
     # validating pincode is the third difficult problem of computer science
-    if pincode in ["000000", "111111", "123456"]:
+    if pincode in ["000000", "111111", "123456"] or not len(pincode) == 6:
         update.effective_chat.send_message("Uh oh! That doesn't look like a valid pincode."
                                            "Please enter a valid pincode to proceed")
         return
@@ -382,7 +386,8 @@ def set_pincode(update: Update, ctx: CallbackContext) -> None:
     user.deleted_at = None
     user.save()
 
-    msg: str = F"Pincode is set to {pincode}. If you'd like to change it, send a valid pincode any time to the bot."
+    msg: str = F"I have updated your pincode to {pincode}. If you'd like to change it, send a valid pincode "\
+               "any time to me."
     reply_markup: InlineKeyboardMarkup
     if user.age_limit is None or user.age_limit == AgeRangePref.Unknown:
         reply_markup = get_age_kb()
@@ -507,8 +512,10 @@ def error_handler(update: object, context: CallbackContext) -> None:
         f'<pre>{html.escape(tb_string)}</pre>'
     )
 
-    # Finally, send the message
-    context.bot.send_message(chat_id=DEVELOPER_CHAT_ID, text=message, parse_mode=ParseMode.HTML)
+    try:
+        context.bot.send_message(chat_id=DEVELOPER_CHAT_ID, text=message, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        logger.exception("error_handler", exc_info=e)
 
 
 def main() -> None:
