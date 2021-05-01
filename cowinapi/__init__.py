@@ -1,8 +1,13 @@
 from datetime import datetime
 import urllib.parse
+from enum import Enum
 from typing import List
 
 import requests
+
+
+class ErrorCode(Enum):
+    InvalidPincodeError = "APPOIN0018"
 
 
 class CoWinAPIException(Exception):

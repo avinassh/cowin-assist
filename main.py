@@ -5,13 +5,14 @@ from copy import deepcopy
 from enum import Enum
 from typing import List
 from datetime import datetime
+import threading
 
+import peewee
 import telegram.error
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, Bot, MAX_MESSAGE_LENGTH, BotCommand
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, CallbackQueryHandler
 from jinja2 import Template
 from peewee import SqliteDatabase, Model, DateTimeField, CharField, FixedCharField, IntegerField, BooleanField
-from pincode import Pincode
 
 from cowinapi import CoWinAPI, VaccinationCenter
 from secrets import TELEGRAM_BOT_TOKEN
@@ -20,6 +21,15 @@ PINCODE_PREFIX_REGEX = r'^\s*(pincode)?\s*(?P<pincode_mg>\d{6})\s*'
 AGE_BUTTON_REGEX = r'^age: (?P<age_mg>\d+)'
 CMD_BUTTON_REGEX = r'^cmd: (?P<cmd_mg>.+)'
 DISABLE_TEXT_REGEX = r'\s*disable|stop|pause\s*'
+
+# all the really complex configs:
+# following says, how often we should poll CoWin APIs for age group 18+. In seconds
+MIN_18_WORKER_INTERVAL = 30
+# following says, how often we should poll CoWin APIs for age group 45+. In seconds
+MIN_45_WORKER_INTERVAL = 60 * 15  # 15 minutes
+# following decides, should we send a notification to user about 45+ or not
+# if we have sent an alert in the last 30 minutes, we will not bother them
+MIN_45_NOTIFICATION_DELAY = 60 * 30
 
 # Enable logging
 logging.basicConfig(
@@ -30,7 +40,12 @@ logger = logging.getLogger(__name__)
 
 CoWinAPIObj = CoWinAPI()
 
-db = SqliteDatabase('users.db')
+db = SqliteDatabase('users.db', pragmas={
+    'journal_mode': 'wal',
+    'cache_size': -1 * 64000,  # 64MB
+    'foreign_keys': 1,
+    'ignore_check_constraints': 0
+})
 
 
 class AgeRangePref(Enum):
@@ -54,7 +69,7 @@ class EnumField(IntegerField):
         super(IntegerField, self).__init__(*args, **kwargs)
         self.choices = choices
 
-    def db_value(self, value) -> int:
+    def db_value(self, value):
         return value.value
 
     def python_value(self, value):
@@ -65,6 +80,7 @@ class EnumField(IntegerField):
 class User(Model):
     created_at = DateTimeField(default=datetime.now)
     updated_at = DateTimeField(default=datetime.now)
+    deleted_at = DateTimeField(null=True)
     last_alert_sent_at: datetime = DateTimeField(default=datetime.now)
     total_alerts_sent = IntegerField(default=0)
     telegram_id = CharField(max_length=220, unique=True)
@@ -147,7 +163,7 @@ def cmd_button_handler(update: Update, ctx: CallbackContext) -> None:
 
 
 def get_help_text_short() -> str:
-    return """This bot will help you to check current available slots and also, send an alert as soon as a slot becomes available. To start, either click on "Setup Alert" or "Check Open Slots". For first time users, bot will ask for age preference and pincode."""  ## noqa
+    return """This bot will help you to check current available slots in one week and also, send an alert as soon as a slot becomes available. To start, either click on "Setup Alert" or "Check Open Slots". For first time users, bot will ask for age preference and pincode."""  ## noqa
 
 
 def get_help_text() -> str:
@@ -157,22 +173,40 @@ def get_help_text() -> str:
 def help_handler(update: Update, ctx: CallbackContext):
     header = "💡 Help\n\n"
     msg = header + get_help_text_short() + get_help_text()
-    update.effective_chat.send_message(msg, parse_mode="markdown", reply_markup=InlineKeyboardMarkup([[*get_main_buttons()]]))
+    update.effective_chat.send_message(msg, parse_mode="markdown",
+                                       reply_markup=InlineKeyboardMarkup([[*get_main_buttons()]]))
+
+
+def delete_cmd_handler(update: Update, _: CallbackContext):
+    user: User
+    try:
+        user = User.get(User.telegram_id == update.effective_user.id, User.deleted_at.is_null(True))
+    except peewee.DoesNotExist:
+        update.effective_chat.send_message("No data exists to delete.")
+        return
+
+    user.deleted_at = datetime.now()
+    user.enabled = False
+    user.pincode = None
+    user.age_limit = AgeRangePref.Unknown
+    user.save()
+    update.effective_chat.send_message("Your data has been successfully deleted. Click on /start to restart the bot")
 
 
 def help_command(update: Update, ctx: CallbackContext) -> None:
     help_handler(update, ctx)
 
 
-def privacy_policy_handler(update: Update, ctx: CallbackContext):
+def privacy_policy_handler(update: Update, _: CallbackContext):
     header = "🔒 Privacy Policy\n\n"
     msg = F"CoWin Assist Bot stores minimal and only the information which is necessary. This includes:\n" \
           "  • Telegram account user id ({id})\n" \
           "  • The pincode to search in CoWin site\n" \
           "  • Age preference\n" \
-          "\nThe bot does not have access to your real name or phone number."
+          "\nThe bot *does not have access* to your real name or phone number." \
+          "\n\nClick on /delete to delete all your data."
     msg = header + msg.format(id=update.effective_user.id)
-    update.effective_chat.send_message(msg)
+    update.effective_chat.send_message(msg, parse_mode="markdown")
 
 
 def age_command(update: Update, ctx: CallbackContext):
@@ -202,7 +236,18 @@ def setup_alert_command(update: Update, ctx: CallbackContext) -> None:
         return
     user.enabled = True
     user.save()
-    update.effective_chat.send_message("Alerts are enabled. Click on /pause to pause the alerts")
+
+    msg = "I have setup alerts for you. "
+    msg_18 = "For age group 18+, as soon as a slot becomes available I will send a message. "
+    msg_45 = "For age group 45+, I will check slots availability for every 15 minutes and send a message if they are " \
+             "available. "
+    if user.age_limit == AgeRangePref.MinAge18:
+        msg = msg + msg_18
+    elif user.age_limit == AgeRangePref.MinAge45:
+        msg = msg + msg_45
+    else:
+        msg = msg + msg_18 + msg_45
+    update.effective_chat.send_message(msg + "\n\nClick on /pause to pause the alerts.")
 
 
 def disable_alert_command(update: Update, _: CallbackContext) -> None:
@@ -220,19 +265,23 @@ def get_available_centers_by_pin(pincode: str) -> List[VaccinationCenter]:
     return vaccination_centers
 
 
-def get_formatted_message(centers: List[VaccinationCenter]) -> str:
+# age_limit param is only used for display purposes. If the user's selected preference is both
+# then we should show the age limit of the vaccination center
+def get_formatted_message(centers: List[VaccinationCenter], age_limit: AgeRangePref) -> str:
     header = ""
     if len(centers) > 10:
-        header = F"Showing 10 centers out of {len(centers)}. Check [CoWin Site](https://www.cowin.gov.in/home) for full list\n" ## noqa
+        header = F"Showing 10 centers out of {len(centers)}. Check [CoWin Site](https://www.cowin.gov.in/home) for full list\n"  ## noqa
+
+    display_age = True if age_limit == AgeRangePref.MinAgeAny else False
 
     # TODO: Fix this shit
     template = """
 {%- for c in centers[:10] %}
 *{{ c.name }}* {%- if c.fee_type == 'Paid' %}*(Paid)*{%- endif %}:{% for s in c.get_available_sessions() %}
-    • {{s.date}}: {{s.capacity}}{% endfor %}
+    • {{s.date}}: {{s.capacity}}{%- if display_age %} *({{s.min_age_limit}}+)*{%- endif %}{% endfor %}
 {% endfor %}"""
     tm = Template(template)
-    return header + tm.render(centers=centers)
+    return header + tm.render(centers=centers, display_age=display_age)
 
 
 # filtering based on the age preferences set by the user
@@ -276,7 +325,7 @@ def check_slots_command(update: Update, ctx: CallbackContext) -> None:
             F"Sorry, no free slots available (pincode: {user.pincode}, age limit: {user.age_limit})")
         return
 
-    msg: str = get_formatted_message(vaccination_centers)
+    msg: str = get_formatted_message(centers=vaccination_centers, age_limit=user.age_limit)
     msg = get_message_header(user=user) + msg
     update.effective_chat.send_message(sanitise_msg(msg), parse_mode='markdown')
     return
@@ -303,6 +352,7 @@ def set_age_preference(update: Update, ctx: CallbackContext) -> None:
     user, _ = get_or_create_user(telegram_id=update.effective_user.id, chat_id=update.effective_chat.id)
     user.age_limit = AgeRangePref(int(age_pref))
     user.updated_at = datetime.now()
+    user.deleted_at = None
     user.save()
 
     if user.pincode:
@@ -317,58 +367,118 @@ def set_pincode(update: Update, ctx: CallbackContext) -> None:
     pincode = ctx.match.groupdict().get("pincode_mg")
     if not pincode:
         return
-    if not Pincode.validate(pincode):
-        update.effective_chat.send_message("Uh oh! That doesn't look like a valid pincode. "
+    # validating pincode is the third difficult problem of computer science
+    if pincode in ["000000", "111111", "123456"]:
+        update.effective_chat.send_message("Uh oh! That doesn't look like a valid pincode."
                                            "Please enter a valid pincode to proceed")
         return
     user: User
     user, _ = get_or_create_user(telegram_id=update.effective_user.id, chat_id=update.effective_chat.id)
     user.pincode = pincode
     user.updated_at = datetime.now()
+    user.deleted_at = None
     user.save()
 
-    if user.age_limit:
-        update.effective_chat.send_message(F"Pincode is set to {pincode}",
-                                           reply_markup=InlineKeyboardMarkup([[*get_main_buttons()]]))
+    msg: str = F"Pincode is set to {pincode}. If you'd like to change it, send a valid pincode any time to the bot."
+    reply_markup: InlineKeyboardMarkup
+    if user.age_limit is None or user.age_limit == AgeRangePref.Unknown:
+        reply_markup = get_age_kb()
+        msg = msg + "\n\nSelect age preference:"
     else:
-        update.effective_chat.send_message(F"Pincode is set to {pincode}. Please set the age preference to proceed next",
-                                           reply_markup=get_age_kb())
+        reply_markup = InlineKeyboardMarkup([[*get_main_buttons()]])
+    update.effective_chat.send_message(msg, reply_markup=reply_markup)
 
 
-def background_worker():
+def send_alert_to_user(bot: telegram.Bot, user: User, centers: List[VaccinationCenter]) -> None:
+    if not centers:
+        return
+    msg: str = get_formatted_message(centers=centers, age_limit=user.age_limit)
+    msg = "*[ALERT!]* " + get_message_header(user=user) + msg + \
+          "\n Click on /pause to disable the notifications"
+    try:
+        bot.send_message(chat_id=user.chat_id, text=sanitise_msg(msg), parse_mode='markdown')
+    except telegram.error.Unauthorized:
+        # looks like this user blocked us. simply disable them
+        user.enabled = False
+        user.save()
+    else:
+        user.last_alert_sent_at = datetime.now()
+        user.total_alerts_sent += 1
+        user.save()
+
+
+def periodic_background_worker(_: telegram.ext.CallbackContext):
+    background_worker(age_limit=AgeRangePref.MinAge45)
+
+
+def frequent_background_worker():
+    while True:
+        try:
+            background_worker(age_limit=AgeRangePref.MinAge18)
+            time.sleep(MIN_18_WORKER_INTERVAL)  # sleep for 30 seconds
+        except Exception as e:
+            logger.exception("frequent_background_worker", exc_info=e)
+            time.sleep(MIN_18_WORKER_INTERVAL)
+
+
+def background_worker(age_limit: AgeRangePref):
     # query db
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
     time_now = datetime.now()
     # find all distinct pincodes where pincode is not null and at least one user exists with alerts enabled
-    for distinct_user in User.select(User.pincode).where(
-            User.pincode.is_null(False), User.enabled == True).distinct():
+    query = User.select(User.pincode).where(
+        (User.pincode.is_null(False)) & (User.enabled == True) & (
+                (User.age_limit == AgeRangePref.MinAgeAny) | (User.age_limit == age_limit))).distinct()
+    for distinct_user in query:
         # get all the available vaccination centers with open slots
         vaccination_centers = get_available_centers_by_pin(distinct_user.pincode)
         if not vaccination_centers:
             continue
         # find all users for this pincode and alerts enabled
-        for user in User.select().where(User.pincode == distinct_user.pincode, User.enabled == True):
-            # if user age limit is not 18, then we shouldn't ping them too often
-            if not user.age_limit == AgeRangePref.MinAge18:
-                delta = time_now - user.last_alert_sent_at
-                if delta.seconds < 60 * 60:
+        user_query = User.select().where(
+            (User.pincode == distinct_user.pincode) & (User.enabled == True) & (
+                    (User.age_limit == AgeRangePref.MinAgeAny) | (User.age_limit == age_limit)
+            ))
+        for user in user_query:
+            delta = time_now - user.last_alert_sent_at
+            # if user age limit is 45, then we shouldn't ping them too often
+            if user.age_limit == AgeRangePref.MinAge45:
+                if delta.seconds < MIN_45_NOTIFICATION_DELAY:
                     continue
-            filtered_centers = filter_centers_by_age_limit(user.age_limit, vaccination_centers)
-            if not filtered_centers:
-                continue
-            msg: str = get_formatted_message(filtered_centers)
-            msg = "*[ALERT!]* " + get_message_header(user=user) + msg + \
-                  "\n Click on /pause to disable the notifications"
-            try:
-                bot.send_message(chat_id=user.chat_id, text=sanitise_msg(msg), parse_mode='markdown')
-            except telegram.error.Unauthorized:
-                # looks like this user blocked us. simply disable them
-                user.enabled = False
-                user.save()
-            else:
-                user.last_alert_sent_at = time_now
-                user.total_alerts_sent += 1
-                user.save()
+                filtered_centers = filter_centers_by_age_limit(user.age_limit, vaccination_centers)
+                if not filtered_centers:
+                    continue
+                send_alert_to_user(bot, user, filtered_centers)
+
+            # for users with age limit of 18, we send the alert
+            if user.age_limit == AgeRangePref.MinAge18:
+                filtered_centers = filter_centers_by_age_limit(user.age_limit, vaccination_centers)
+                if not filtered_centers:
+                    continue
+                filtered_centers = filter_centers_by_age_limit(user.age_limit, vaccination_centers)
+                if not filtered_centers:
+                    continue
+                send_alert_to_user(bot, user, filtered_centers)
+
+            # here comes the tricky part. for users who have set up both
+            # we would want to send 18+ alerts more often than 45+
+            if user.age_limit == AgeRangePref.MinAgeAny:
+                filtered_centers: List[VaccinationCenter]
+                if delta.seconds < MIN_45_NOTIFICATION_DELAY:
+                    # include only 18+ results
+                    filtered_centers = filter_centers_by_age_limit(AgeRangePref.MinAge18, vaccination_centers)
+                else:
+                    # include both results
+                    filtered_centers = filter_centers_by_age_limit(user.age_limit, vaccination_centers)
+                if not filtered_centers:
+                    continue
+                send_alert_to_user(bot, user, filtered_centers)
+
+
+# works in the background to remove all the deleted user rows permanently
+def clean_up() -> None:
+    # delete all the users permanently whose deleted_at value is not null
+    User.delete().where(User.deleted_at.is_null(False))
 
 
 def main() -> None:
@@ -388,6 +498,7 @@ def main() -> None:
     db.connect()
     db.create_tables([User, ])
 
+    # initialise the handler
     updater = Updater(TELEGRAM_BOT_TOKEN)
 
     # Add handlers
@@ -398,6 +509,7 @@ def main() -> None:
     updater.dispatcher.add_handler(CommandHandler("pause", disable_alert_command))
     updater.dispatcher.add_handler(CommandHandler("age", age_command))
     updater.dispatcher.add_handler(CommandHandler("pincode", pincode_command))
+    updater.dispatcher.add_handler(CommandHandler("delete", delete_cmd_handler))
     updater.dispatcher.add_handler(CallbackQueryHandler(set_age_preference, pattern=AGE_BUTTON_REGEX))
     updater.dispatcher.add_handler(CallbackQueryHandler(cmd_button_handler, pattern=CMD_BUTTON_REGEX))
     updater.dispatcher.add_handler(MessageHandler(Filters.regex(
@@ -406,15 +518,13 @@ def main() -> None:
         re.compile(DISABLE_TEXT_REGEX, re.IGNORECASE)), disable_alert_command))
     updater.dispatcher.add_handler(MessageHandler(~Filters.command, default))
 
+    updater.job_queue.run_repeating(
+        periodic_background_worker, interval=MIN_45_WORKER_INTERVAL, first=10)
+    # start a bg thread in the background
+    threading.Thread(target=frequent_background_worker).start()
+
     # Start the Bot
     updater.start_polling()
-
-    try:
-        while True:
-            background_worker()
-            time.sleep(30)  # sleep for 30 seconds
-    except Exception as e:
-        logger.exception("bg worker failed", exc_info=e)
     updater.idle()
 
 
