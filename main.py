@@ -6,16 +6,19 @@ from enum import Enum
 from typing import List
 from datetime import datetime
 import threading
+import traceback
+import html
+import json
 
 import peewee
 import telegram.error
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, Bot, MAX_MESSAGE_LENGTH, BotCommand
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, Bot, MAX_MESSAGE_LENGTH, BotCommand, ParseMode
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, CallbackQueryHandler
 from jinja2 import Template
 from peewee import SqliteDatabase, Model, DateTimeField, CharField, FixedCharField, IntegerField, BooleanField
 
 from cowinapi import CoWinAPI, VaccinationCenter
-from secrets import TELEGRAM_BOT_TOKEN
+from secrets import TELEGRAM_BOT_TOKEN, DEVELOPER_CHAT_ID
 
 PINCODE_PREFIX_REGEX = r'^\s*(pincode)?\s*(?P<pincode_mg>\d{6})\s*'
 AGE_BUTTON_REGEX = r'^age: (?P<age_mg>\d+)'
@@ -481,6 +484,33 @@ def clean_up() -> None:
     User.delete().where(User.deleted_at.is_null(False))
 
 
+# source: https://github.com/python-telegram-bot/python-telegram-bot/blob/master/examples/errorhandlerbot.py
+def error_handler(update: object, context: CallbackContext) -> None:
+    """Log the error and send a telegram message to notify the developer."""
+    # Log the error before we do anything else, so we can see it even if something breaks.
+    logger.error(msg="Exception while handling an update:", exc_info=context.error)
+
+    # traceback.format_exception returns the usual python message about an exception, but as a
+    # list of strings rather than a single string, so we have to join them together.
+    tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
+    tb_string = ''.join(tb_list)
+
+    # Build the message with some markup and additional information about what happened.
+    # You might need to add some logic to deal with messages longer than the 4096 character limit.
+    update_str = update.to_dict() if isinstance(update, Update) else str(update)
+    message = (
+        f'An exception was raised while handling an update\n'
+        f'<pre>update = {html.escape(json.dumps(update_str, indent=2, ensure_ascii=False))}'
+        '</pre>\n\n'
+        f'<pre>context.chat_data = {html.escape(str(context.chat_data))}</pre>\n\n'
+        f'<pre>context.user_data = {html.escape(str(context.user_data))}</pre>\n\n'
+        f'<pre>{html.escape(tb_string)}</pre>'
+    )
+
+    # Finally, send the message
+    context.bot.send_message(chat_id=DEVELOPER_CHAT_ID, text=message, parse_mode=ParseMode.HTML)
+
+
 def main() -> None:
     # initialise bot and set commands
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
@@ -517,6 +547,7 @@ def main() -> None:
     updater.dispatcher.add_handler(MessageHandler(Filters.regex(
         re.compile(DISABLE_TEXT_REGEX, re.IGNORECASE)), disable_alert_command))
     updater.dispatcher.add_handler(MessageHandler(~Filters.command, default))
+    updater.dispatcher.add_error_handler(error_handler)
 
     updater.job_queue.run_repeating(
         periodic_background_worker, interval=MIN_45_WORKER_INTERVAL, first=10)
