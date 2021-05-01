@@ -190,7 +190,7 @@ def delete_cmd_handler(update: Update, _: CallbackContext):
     user.pincode = None
     user.age_limit = AgeRangePref.Unknown
     user.save()
-    update.effective_chat.send_message("Your data has been successfully deleted. Click on /start to restart the bot")
+    update.effective_chat.send_message("Your data has been successfully deleted. Click on /start to restart the bot.")
 
 
 def help_command(update: Update, ctx: CallbackContext) -> None:
