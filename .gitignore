@@ -142,3 +142,7 @@ cython_debug/
 /users.db
 /users.db-shm
 /users.db-wal
+
+# logs
+logs/*
+!logs/.keep
