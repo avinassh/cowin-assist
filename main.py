@@ -17,7 +17,7 @@ from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, Callb
 from jinja2 import Template
 from peewee import SqliteDatabase, Model, DateTimeField, CharField, FixedCharField, IntegerField, BooleanField
 
-from cowinapi import CoWinAPI, VaccinationCenter
+from cowinapi import CoWinAPI, VaccinationCenter, TooManyRequests
 from secrets import TELEGRAM_BOT_TOKEN, DEVELOPER_CHAT_ID
 
 PINCODE_PREFIX_REGEX = r'^\s*(pincode)?\s*(?P<pincode_mg>\d+)\s*'
@@ -29,10 +29,17 @@ DISABLE_TEXT_REGEX = r'\s*disable|stop|pause\s*'
 # following says, how often we should poll CoWin APIs for age group 18+. In seconds
 MIN_18_WORKER_INTERVAL = 30
 # following says, how often we should poll CoWin APIs for age group 45+. In seconds
-MIN_45_WORKER_INTERVAL = 60 * 15  # 15 minutes
+MIN_45_WORKER_INTERVAL = 60 * 10  # 10 minutes
 # following decides, should we send a notification to user about 45+ or not
 # if we have sent an alert in the last 30 minutes, we will not bother them
 MIN_45_NOTIFICATION_DELAY = 60 * 30
+# whenever an exception occurs, we sleep for these many seconds hoping things will be fine
+# when we wake up
+EXCEPTION_SLEEP_INTERVAL = 10
+# the amount of time we sleep in background workers whenever we hit their APIs
+COWIN_API_DELAY_INTERVAL = 5
+# the amount of time we sleep when we get 403 from CoWin
+LIMIT_EXCEEDED_DELAY_INTERVAL = 60 * 5  # 5 minutes
 
 # Enable logging
 logging.basicConfig(
@@ -324,8 +331,14 @@ def check_slots_command(update: Update, ctx: CallbackContext) -> None:
     user = check_if_preferences_are_set(update, ctx)
     if not user:
         return
-
-    vaccination_centers = get_available_centers_by_pin(user.pincode)
+    vaccination_centers: List[VaccinationCenter]
+    try:
+        vaccination_centers = get_available_centers_by_pin(user.pincode)
+    except TooManyRequests:
+        update.effective_chat.send_message(
+            F"Hey sorry, I wasn't able to reach [CoWin Site](https://www.cowin.gov.in/home) at this moment. "
+            "Please try after few minutes.", parse_mode="markdown")
+        return
     vaccination_centers = filter_centers_by_age_limit(user.age_limit, vaccination_centers)
     if not vaccination_centers:
         update.effective_chat.send_message(
@@ -416,18 +429,34 @@ def send_alert_to_user(bot: telegram.Bot, user: User, centers: List[VaccinationC
         user.save()
 
 
-def periodic_background_worker(_: telegram.ext.CallbackContext):
-    background_worker(age_limit=AgeRangePref.MinAge45)
+def periodic_background_worker():
+    while True:
+        try:
+            logger.info("starting a bg worker - periodic_background_worker")
+            background_worker(age_limit=AgeRangePref.MinAge45)
+            logger.info("bg worker executed successfully - periodic_background_worker")
+            time.sleep(MIN_45_WORKER_INTERVAL)  # sleep for 10 mins
+        except TooManyRequests:
+            logging.error("got 403 - too many requests - periodic_background_worker")
+            time.sleep(LIMIT_EXCEEDED_DELAY_INTERVAL)
+        except Exception as e:
+            logger.exception("periodic_background_worker", exc_info=e)
+            time.sleep(EXCEPTION_SLEEP_INTERVAL)
 
 
 def frequent_background_worker():
     while True:
         try:
+            logger.info("starting a bg worker - frequent_background_worker")
             background_worker(age_limit=AgeRangePref.MinAge18)
+            logger.info("bg worker executed successfully - frequent_background_worker")
             time.sleep(MIN_18_WORKER_INTERVAL)  # sleep for 30 seconds
+        except TooManyRequests:
+            logging.error("got 403 - too many requests - frequent_background_worker")
+            time.sleep(LIMIT_EXCEEDED_DELAY_INTERVAL)
         except Exception as e:
             logger.exception("frequent_background_worker", exc_info=e)
-            time.sleep(MIN_18_WORKER_INTERVAL)
+            time.sleep(EXCEPTION_SLEEP_INTERVAL)
 
 
 def background_worker(age_limit: AgeRangePref):
@@ -443,8 +472,8 @@ def background_worker(age_limit: AgeRangePref):
     for distinct_user in query:
         # get all the available vaccination centers with open slots
         vaccination_centers = get_available_centers_by_pin(distinct_user.pincode)
-        # sleep for 10 seconds since we have hit their APIs
-        time.sleep(10)
+        # sleep for 5 seconds since we have hit their APIs
+        time.sleep(COWIN_API_DELAY_INTERVAL)
         if not vaccination_centers:
             continue
         # find all users for this pincode and alerts enabled
@@ -565,10 +594,9 @@ def main() -> None:
     updater.dispatcher.add_handler(MessageHandler(~Filters.command, default))
     updater.dispatcher.add_error_handler(error_handler)
 
-    updater.job_queue.run_repeating(
-        periodic_background_worker, interval=MIN_45_WORKER_INTERVAL, first=10)
-    # start a bg thread in the background
+    # launch two background threads, one for slow worker (age group 45+) and another for fast one (age group 18+)
     threading.Thread(target=frequent_background_worker).start()
+    threading.Thread(target=periodic_background_worker).start()
 
     # Start the Bot
     updater.start_polling()
