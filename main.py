@@ -438,6 +438,8 @@ def background_worker(age_limit: AgeRangePref):
     query = User.select(User.pincode).where(
         (User.pincode.is_null(False)) & (User.enabled == True) & (
                 (User.age_limit == AgeRangePref.MinAgeAny) | (User.age_limit == age_limit))).distinct()
+    # TODO: Quick hack to load all pincodes in memory
+    query = list(query)
     for distinct_user in query:
         # get all the available vaccination centers with open slots
         vaccination_centers = get_available_centers_by_pin(distinct_user.pincode)
