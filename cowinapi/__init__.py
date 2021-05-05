@@ -8,6 +8,7 @@ import requests
 
 class ErrorCode(Enum):
     InvalidPincodeError = "APPOIN0018"
+    TooManyRequests = "403: Too many requests"
 
 
 class CoWinAPIException(Exception):
@@ -24,6 +25,9 @@ class CoWinAPIException(Exception):
     def __repr__(self) -> str:
         return self.__str__()
 
+
+class TooManyRequests(CoWinAPIException):
+    pass
 
 class Session:
     date: str
@@ -102,11 +106,14 @@ class CoWinAPI:
     """
 
     def calender_by_pin(self: "CoWinAPI", pincode: str, date: str) -> List[VaccinationCenter]:
+        raise TooManyRequests(errorCode=ErrorCode.TooManyRequests.value, error=ErrorCode.TooManyRequests.value)
         url = urllib.parse.urljoin(self.base_domain, "/api/v2/appointment/sessions/public/calendarByPin")
         params = {'pincode': pincode, 'date': date}
         r = self.requests.get(url, params=params, headers=self.get_default_headers())
         if r.status_code == requests.codes.bad_request:
             raise CoWinAPIException(**r.json())
+        if r.status_code == requests.codes.forbidden:
+            raise TooManyRequests(errorCode=ErrorCode.TooManyRequests.value, error=ErrorCode.TooManyRequests.value)
         if not r.status_code == requests.codes.ok:
             return
         if centers := r.json()["centers"]:
