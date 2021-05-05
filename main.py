@@ -441,6 +441,8 @@ def background_worker(age_limit: AgeRangePref):
     for distinct_user in query:
         # get all the available vaccination centers with open slots
         vaccination_centers = get_available_centers_by_pin(distinct_user.pincode)
+        # sleep for 10 seconds since we have hit their APIs
+        time.sleep(10)
         if not vaccination_centers:
             continue
         # find all users for this pincode and alerts enabled
