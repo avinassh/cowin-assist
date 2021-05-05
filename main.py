@@ -18,7 +18,7 @@ from jinja2 import Template
 from peewee import SqliteDatabase, Model, DateTimeField, CharField, FixedCharField, IntegerField, BooleanField
 
 from cowinapi import CoWinAPI, VaccinationCenter
-from secrets import TELEGRAM_BOT_TOKEN, DEVELOPER_CHAT_ID
+from secrets import TELEGRAM_BOT_TOKEN, DEVELOPER_CHAT_ID, MAINTAINERS_CHAT_IDS
 
 PINCODE_PREFIX_REGEX = r'^\s*(pincode)?\s*(?P<pincode_mg>\d+)\s*'
 AGE_BUTTON_REGEX = r'^age: (?P<age_mg>\d+)'
@@ -198,6 +198,30 @@ def delete_cmd_handler(update: Update, _: CallbackContext):
     user.age_limit = AgeRangePref.Unknown
     user.save()
     update.effective_chat.send_message("Your data has been successfully deleted. Click on /start to restart the bot.")
+
+
+def stats_cmd_handler(update: Update, _: CallbackContext):
+    if update.effective_user.id not in MAINTAINERS_CHAT_IDS:
+        return
+    # prepare stats and send it to the user
+    # total users and total enabled users
+    # * count of distinct pincodes
+    # recently signed up user
+    # recently sent alert
+    total_users = User.select().count()
+    enabled_users = User.select().where(User.enabled == True).count()
+    distinct_pincodes = User.select(User.pincode).distinct().count()
+    last_signed_up_time = User.select(User.created_at).order_by(User.created_at.desc()).limit(1)
+    last_alerted_time = User.select(User.last_alert_sent_at).order_by(User.last_alert_sent_at.desc()).limit(1)
+    import ipdb; ipdb.set_trace()
+    msg = F"""Here are the fresh stats:
+      • Total users: {total_users}
+      • Active users: {enabled_users}
+      • Pincodes served: {distinct_pincodes}
+      • Last user signed up at: {last_signed_up_time}
+      • Last alert sent at: {last_alerted_time}
+    """
+    update.effective_chat.send_message(msg, parse_mode="markdown")
 
 
 def help_command(update: Update, ctx: CallbackContext) -> None:
@@ -552,6 +576,7 @@ def main() -> None:
     updater.dispatcher.add_handler(CommandHandler("age", age_command))
     updater.dispatcher.add_handler(CommandHandler("pincode", pincode_command))
     updater.dispatcher.add_handler(CommandHandler("delete", delete_cmd_handler))
+    updater.dispatcher.add_handler(CommandHandler("stats", stats_cmd_handler))
     updater.dispatcher.add_handler(CallbackQueryHandler(set_age_preference, pattern=AGE_BUTTON_REGEX))
     updater.dispatcher.add_handler(CallbackQueryHandler(cmd_button_handler, pattern=CMD_BUTTON_REGEX))
     updater.dispatcher.add_handler(MessageHandler(Filters.regex(
