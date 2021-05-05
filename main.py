@@ -37,7 +37,7 @@ MIN_45_NOTIFICATION_DELAY = 60 * 30
 # when we wake up
 EXCEPTION_SLEEP_INTERVAL = 10
 # the amount of time we sleep in background workers whenever we hit their APIs
-COWIN_API_DELAY_INTERVAL = 5
+COWIN_API_DELAY_INTERVAL = 60
 # the amount of time we sleep when we get 403 from CoWin
 LIMIT_EXCEEDED_DELAY_INTERVAL = 60 * 5  # 5 minutes
 
@@ -472,7 +472,7 @@ def background_worker(age_limit: AgeRangePref):
     for distinct_user in query:
         # get all the available vaccination centers with open slots
         vaccination_centers = get_available_centers_by_pin(distinct_user.pincode)
-        # sleep for 5 seconds since we have hit their APIs
+        # sleep for 60 seconds since we have hit their APIs
         time.sleep(COWIN_API_DELAY_INTERVAL)
         if not vaccination_centers:
             continue
