@@ -106,7 +106,6 @@ class CoWinAPI:
     """
 
     def calender_by_pin(self: "CoWinAPI", pincode: str, date: str) -> List[VaccinationCenter]:
-        raise TooManyRequests(errorCode=ErrorCode.TooManyRequests.value, error=ErrorCode.TooManyRequests.value)
         url = urllib.parse.urljoin(self.base_domain, "/api/v2/appointment/sessions/public/calendarByPin")
         params = {'pincode': pincode, 'date': date}
         r = self.requests.get(url, params=params, headers=self.get_default_headers())
