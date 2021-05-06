@@ -3,7 +3,7 @@ import re
 import time
 from copy import deepcopy
 from enum import Enum
-from typing import List
+from typing import List, Optional
 from datetime import datetime
 import threading
 import traceback
@@ -17,7 +17,7 @@ from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, Callb
 from jinja2 import Template
 from peewee import SqliteDatabase, Model, DateTimeField, CharField, FixedCharField, IntegerField, BooleanField
 
-from cowinapi import CoWinAPI, VaccinationCenter, TooManyRequests
+from cowinapi import CoWinAPI, VaccinationCenter, CoWinTooManyRequests
 from secrets import TELEGRAM_BOT_TOKEN, DEVELOPER_CHAT_ID
 
 PINCODE_PREFIX_REGEX = r'^\s*(pincode)?\s*(?P<pincode_mg>\d+)\s*'
@@ -25,19 +25,19 @@ AGE_BUTTON_REGEX = r'^age: (?P<age_mg>\d+)'
 CMD_BUTTON_REGEX = r'^cmd: (?P<cmd_mg>.+)'
 DISABLE_TEXT_REGEX = r'\s*disable|stop|pause\s*'
 
-# all the really complex configs:
-# following says, how often we should poll CoWin APIs for age group 18+. In seconds
+# All the really complex configs:
+# Following says, how often we should poll CoWin APIs for age group 18+. In seconds
 MIN_18_WORKER_INTERVAL = 30
-# following says, how often we should poll CoWin APIs for age group 45+. In seconds
+# Following says, how often we should poll CoWin APIs for age group 45+. In seconds
 MIN_45_WORKER_INTERVAL = 60 * 10  # 10 minutes
-# following decides, should we send a notification to user about 45+ or not
-# if we have sent an alert in the last 30 minutes, we will not bother them
+# Following decides, should we send a notification to user about 45+ or not.
+# If we have sent an alert in the last 30 minutes, we will not bother them
 MIN_45_NOTIFICATION_DELAY = 60 * 30
-# whenever an exception occurs, we sleep for these many seconds hoping things will be fine
-# when we wake up
+# Whenever an exception occurs, we sleep for these many seconds hoping things will be fine
+# when we wake up. This surprisingly works most of the times.
 EXCEPTION_SLEEP_INTERVAL = 10
 # the amount of time we sleep in background workers whenever we hit their APIs
-COWIN_API_DELAY_INTERVAL = 180 # 3 minutes
+COWIN_API_DELAY_INTERVAL = 180  # 3 minutes
 # the amount of time we sleep when we get 403 from CoWin
 LIMIT_EXCEEDED_DELAY_INTERVAL = 60 * 5  # 5 minutes
 
@@ -104,6 +104,13 @@ class User(Model):
 
 
 def sanitise_msg(msg: str) -> str:
+    """
+    Telegram messages can't be more than `MAX_MESSAGE_LENGTH` bytes. So, this method truncates the message body
+    with appropriate size and adds a footer saying message was truncated.
+
+    CAUTION: This does a really naive truncation which might end up breaking a valid markdown / html to an invalid one
+    and Telegram will reject that message.
+    """
     if len(msg) < MAX_MESSAGE_LENGTH:
         return msg
 
@@ -143,6 +150,9 @@ def get_main_keyboard() -> InlineKeyboardMarkup:
 
 
 def start(update: Update, _: CallbackContext) -> None:
+    """
+    Handles /start, the very first message the user gets whenever they start interacting with this bot
+    """
     msg = """Hey there!👋
 Welcome to CoWin Assist bot. 
 
@@ -154,6 +164,12 @@ If you are a first time user I will ask for your age and pincode."""
 
 
 def cmd_button_handler(update: Update, ctx: CallbackContext) -> None:
+    """
+    Whenever we send buttons to user, we also include callback data. For commands, we usually send the data in the form
+    of `cmd: <cmd_name>`. Check `get_main_buttons` or `get_main_keyboard` methods to see how the data is sent.
+
+    When user clicks on those buttons, we also get the callback data. Following figures out appropriate command to run
+    """
     query = update.callback_query
     query.answer()
 
@@ -184,7 +200,7 @@ def get_help_text() -> str:
     return """\n\n*Setup Alert*\nUse this to setup an alert, it will send a message as soon as a slot becomes available. Select the age preference and provide the area pincode of the vaccination center you would like to monitor. Do note that 18+ slots are monitored more often than 45+. Click on /pause to stop alerts and /resume to enable them back.\n\n*Check Open Slots*\nUse this to check the slots availability manually.\n\n*Age Preference*\nTo change age preference, click on /age\n\n*Pincode*\nClick on /pincode to change the pincode. Alternatively, you can send pincode any time and bot will update it.\n\n*Delete*\nClick on /delete if you would like delete all your information."""  ## noqa
 
 
-def help_handler(update: Update, ctx: CallbackContext):
+def help_handler(update: Update, _: CallbackContext):
     header = "💡 Help\n\n"
     msg = header + get_help_text_short() + get_help_text()
     update.effective_chat.send_message(msg, parse_mode="markdown",
@@ -223,16 +239,20 @@ def privacy_policy_handler(update: Update, _: CallbackContext):
     update.effective_chat.send_message(msg, parse_mode="markdown")
 
 
-def age_command(update: Update, ctx: CallbackContext):
+def age_command(update: Update, _: CallbackContext):
     update.effective_chat.send_message("Select your age preference", reply_markup=get_age_kb())
     return
 
 
-def pincode_command(update: Update, ctx: CallbackContext):
+def pincode_command(update: Update, _: CallbackContext):
     update.effective_chat.send_message("Enter your pincode")
 
 
-def check_if_preferences_are_set(update: Update, ctx: CallbackContext) -> User:
+def check_if_preferences_are_set(update: Update, ctx: CallbackContext) -> Optional[User]:
+    """
+    Checks if preferences for the current user are set or not. If not set, asks them to set. If they are set, then
+    returns the `User` object from DB.
+    """
     user: User
     user, _ = get_or_create_user(telegram_id=update.effective_user.id, chat_id=update.effective_chat.id)
     if user.age_limit is None or user.age_limit == AgeRangePref.Unknown:
@@ -279,10 +299,15 @@ def get_available_centers_by_pin(pincode: str) -> List[VaccinationCenter]:
     return vaccination_centers
 
 
-# age_limit param is only used for display purposes. If the user's selected preference is both
-# then we should show the age limit of the vaccination center
 def get_formatted_message(centers: List[VaccinationCenter], age_limit: AgeRangePref) -> str:
+    """
+    Given a list of vaccination centers, this method returns a nicely formatted message which can be sent to the user
+
+    param: age_limit is only used for display purposes. If the user's selected preference is both
+    then we should show the age limit of the vaccination center
+    """
     header = ""
+    # Some pincodes have more than 10 centers, in that case we just limit it to 10 and send those only.
     if len(centers) > 10:
         header = F"Showing 10 centers out of {len(centers)}. Check [CoWin Site](https://www.cowin.gov.in/home) for full list\n"  ## noqa
 
@@ -298,14 +323,18 @@ def get_formatted_message(centers: List[VaccinationCenter], age_limit: AgeRangeP
     return header + tm.render(centers=centers, display_age=display_age)
 
 
-# filtering based on the age preferences set by the user
-# this method always returns a copy of the centers list
 def filter_centers_by_age_limit(age_limit: AgeRangePref, centers: List[VaccinationCenter]) -> List[VaccinationCenter]:
-    # if user hasn't set any age preferences, then just show everything
-    if age_limit in [None, AgeRangePref.MinAgeAny, AgeRangePref.Unknown]:
+    """
+    filter_centers_by_age_limit filters the centers based on the age preferences set by the user
+
+    If there's no filtering required, then it just returns the centers list as it is. If it needs to filter out centers,
+    then it makes a deep copy of `centers`, modifies it and returns that
+    """
+    if not centers:
         return centers
 
-    if not centers:
+    # if user hasn't set any age preferences, then just show everything
+    if age_limit in [None, AgeRangePref.MinAgeAny, AgeRangePref.Unknown]:
         return centers
 
     filter_age: int
@@ -334,7 +363,7 @@ def check_slots_command(update: Update, ctx: CallbackContext) -> None:
     vaccination_centers: List[VaccinationCenter]
     try:
         vaccination_centers = get_available_centers_by_pin(user.pincode)
-    except TooManyRequests:
+    except CoWinTooManyRequests:
         update.effective_chat.send_message(
             F"Hey sorry, I wasn't able to reach [CoWin Site](https://www.cowin.gov.in/home) at this moment. "
             "Please try after few minutes.", parse_mode="markdown")
@@ -436,7 +465,7 @@ def periodic_background_worker():
             background_worker(age_limit=AgeRangePref.MinAge45)
             logger.info("bg worker executed successfully - periodic_background_worker")
             time.sleep(MIN_45_WORKER_INTERVAL)  # sleep for 10 mins
-        except TooManyRequests:
+        except CoWinTooManyRequests:
             logging.error("got 403 - too many requests - periodic_background_worker")
             time.sleep(LIMIT_EXCEEDED_DELAY_INTERVAL)
         except Exception as e:
@@ -451,7 +480,7 @@ def frequent_background_worker():
             background_worker(age_limit=AgeRangePref.MinAge18)
             logger.info("bg worker executed successfully - frequent_background_worker")
             time.sleep(MIN_18_WORKER_INTERVAL)  # sleep for 30 seconds
-        except TooManyRequests:
+        except CoWinTooManyRequests:
             logging.error("got 403 - too many requests - frequent_background_worker")
             time.sleep(LIMIT_EXCEEDED_DELAY_INTERVAL)
         except Exception as e:
@@ -460,7 +489,6 @@ def frequent_background_worker():
 
 
 def background_worker(age_limit: AgeRangePref):
-    # query db
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
     time_now = datetime.now()
     # find all distinct pincodes where pincode is not null and at least one user exists with alerts enabled
@@ -472,7 +500,7 @@ def background_worker(age_limit: AgeRangePref):
     for distinct_user in query:
         # get all the available vaccination centers with open slots
         vaccination_centers = get_available_centers_by_pin(distinct_user.pincode)
-        # sleep for 60 seconds since we have hit their APIs
+        # sleep, since we have hit CoWin APIs
         time.sleep(COWIN_API_DELAY_INTERVAL)
         if not vaccination_centers:
             continue
@@ -525,17 +553,10 @@ def clean_up() -> None:
 
 # source: https://github.com/python-telegram-bot/python-telegram-bot/blob/master/examples/errorhandlerbot.py
 def error_handler(update: object, context: CallbackContext) -> None:
-    """Log the error and send a telegram message to notify the developer."""
-    # Log the error before we do anything else, so we can see it even if something breaks.
     logger.error(msg="Exception while handling an update:", exc_info=context.error)
-
-    # traceback.format_exception returns the usual python message about an exception, but as a
-    # list of strings rather than a single string, so we have to join them together.
     tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
     tb_string = ''.join(tb_list)
 
-    # Build the message with some markup and additional information about what happened.
-    # You might need to add some logic to deal with messages longer than the 4096 character limit.
     update_str = update.to_dict() if isinstance(update, Update) else str(update)
     message = (
         f'An exception was raised while handling an update\n'
@@ -600,6 +621,7 @@ def main() -> None:
 
     # Start the Bot
     updater.start_polling()
+    # block it, baby
     updater.idle()
 
 

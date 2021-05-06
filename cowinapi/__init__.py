@@ -1,7 +1,7 @@
 from datetime import datetime
 import urllib.parse
 from enum import Enum
-from typing import List
+from typing import List, Optional
 
 import requests
 
@@ -26,8 +26,9 @@ class CoWinAPIException(Exception):
         return self.__str__()
 
 
-class TooManyRequests(CoWinAPIException):
+class CoWinTooManyRequests(CoWinAPIException):
     pass
+
 
 class Session:
     date: str
@@ -105,14 +106,14 @@ class CoWinAPI:
     date: valid date in str with DD-MM-YYYY format
     """
 
-    def calender_by_pin(self: "CoWinAPI", pincode: str, date: str) -> List[VaccinationCenter]:
+    def calender_by_pin(self: "CoWinAPI", pincode: str, date: str) -> Optional[List[VaccinationCenter]]:
         url = urllib.parse.urljoin(self.base_domain, "/api/v2/appointment/sessions/public/calendarByPin")
         params = {'pincode': pincode, 'date': date}
         r = self.requests.get(url, params=params, headers=self.get_default_headers())
         if r.status_code == requests.codes.bad_request:
             raise CoWinAPIException(**r.json())
         if r.status_code == requests.codes.forbidden:
-            raise TooManyRequests(errorCode=ErrorCode.TooManyRequests.value, error=ErrorCode.TooManyRequests.value)
+            raise CoWinTooManyRequests(errorCode=ErrorCode.TooManyRequests.value, error=ErrorCode.TooManyRequests.value)
         if not r.status_code == requests.codes.ok:
             return
         if centers := r.json()["centers"]:
