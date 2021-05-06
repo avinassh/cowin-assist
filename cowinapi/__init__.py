@@ -120,7 +120,9 @@ class CoWinAPI:
         return
 
     def get_default_headers(self) -> dict:
-        return {'Accept-Language': self.accept_language, 'accept': 'application/json', 'User-Agent': 'curl/7.64.1'}
+        return {'Accept-Language': self.accept_language, 'accept': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, '
+                              'like Gecko) Chrome/90.0.4430.93 Safari/537.36'}
 
     @staticmethod
     def today() -> str:

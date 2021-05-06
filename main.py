@@ -37,7 +37,7 @@ MIN_45_NOTIFICATION_DELAY = 60 * 30
 # when we wake up
 EXCEPTION_SLEEP_INTERVAL = 10
 # the amount of time we sleep in background workers whenever we hit their APIs
-COWIN_API_DELAY_INTERVAL = 60
+COWIN_API_DELAY_INTERVAL = 180 # 3 minutes
 # the amount of time we sleep when we get 403 from CoWin
 LIMIT_EXCEEDED_DELAY_INTERVAL = 60 * 5  # 5 minutes
 
