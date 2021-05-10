@@ -121,7 +121,7 @@ def sanitise_msg(msg: str) -> str:
 
 def get_main_buttons() -> List[InlineKeyboardButton]:
     return [
-        InlineKeyboardButton("🔔 Setup Alert", callback_data='cmd: setup_alert'),
+        # InlineKeyboardButton("🔔 Setup Alert", callback_data='cmd: setup_alert'),
         InlineKeyboardButton("🔍 Check Open Slots", callback_data='cmd: check_slots'),
     ]
 
@@ -197,7 +197,7 @@ def get_help_text_short() -> str:
 
 
 def get_help_text() -> str:
-    return """\n\n*Setup Alert*\nUse this to setup an alert, it will send a message as soon as a slot becomes available. Select the age preference and provide the area pincode of the vaccination center you would like to monitor. Do note that 18+ slots are monitored more often than 45+. Click on /pause to stop alerts and /resume to enable them back.\n\n*Check Open Slots*\nUse this to check the slots availability manually.\n\n*Age Preference*\nTo change age preference, click on /age\n\n*Pincode*\nClick on /pincode to change the pincode. Alternatively, you can send pincode any time and bot will update it.\n\n*Delete*\nClick on /delete if you would like delete all your information."""  ## noqa
+    return """\n\n*Setup Alerts*\nDue to new Govt rules on CoWin websites we will not be able to send you alerts\n\n*Check Open Slots*\nUse this to check the slots availability manually.\n\n*Age Preference*\nTo change age preference, click on /age\n\n*Pincode*\nClick on /pincode to change the pincode. Alternatively, you can send pincode any time and bot will update it.\n\n*Delete*\nClick on /delete if you would like delete all your information."""  ## noqa
 
 
 def help_handler(update: Update, _: CallbackContext):
