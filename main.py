@@ -271,7 +271,7 @@ def setup_alert_command(update: Update, ctx: CallbackContext) -> None:
     user.enabled = True
     user.save()
 
-    msg = "🔔 I have setup alerts for you. "
+    msg = "🔔 I have setup alerts for you at pincode " + user.pincode + ". "
     msg_18 = "For age group 18+, as soon as a slot becomes available I will send you a message. "
     msg_45 = "For age group 45+, I will check slots availability for every 15 minutes and send a message if they are " \
              "available. "
