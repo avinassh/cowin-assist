@@ -263,8 +263,20 @@ def check_if_preferences_are_set(update: Update, ctx: CallbackContext) -> Option
     return user
 
 
+def get_disabled_alerts_msg() -> str:
+    return """
+Hello there!👋 
+
+Due to recent changes made by Govt for the CoWin website, the bot will not be able to send alerts efficiently. Thereby, we are disabling the alerts permanently. Sorry for the inconvenience. 
+
+If you would like to delete your data, click on /delete to permanently delete. Check /help for more available options.
+
+If you are a developer and interested in running the bot by yourself, you may check the source code on [Github](https://github.com/avinassh/cowin-assist).
+        """
+
+
 def setup_alert_command(update: Update, ctx: CallbackContext) -> None:
-    update.effective_chat.send_message("Sorry, alerts are permanently disabled")
+    update.effective_chat.send_message(get_disabled_alerts_msg(), parse_mode='markdown', disable_web_page_preview=True)
     return
 
     # unreachable code, but meh
@@ -630,21 +642,13 @@ def main() -> None:
 
 
 def message_all():
-    bye = """
-Hello there!👋 
-
-Due to recent changes made by Govt for the CoWin website, the bot will not be able to send alerts efficiently. Thereby, we are disabling the alerts permanently. Sorry for the inconvenience. 
-
-If you would like to delete your data, click on /delete to permanently delete. Check /help for more available options.
-
-If you are a developer and interested in running the bot by yourself, you may check the source code on [Github](https://github.com/avinassh/cowin-assist).
-    """
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
     u: User
     for u in User.select().where(User.deleted_at.is_null(True)):
         logger.info(F"sending alert to user {u.telegram_id}")
         try:
-            bot.send_message(chat_id=u.chat_id, text=bye, parse_mode='markdown', disable_web_page_preview=True)
+            bot.send_message(chat_id=u.chat_id, text=get_disabled_alerts_msg(), parse_mode='markdown',
+                             disable_web_page_preview=True)
         except telegram.error.Unauthorized:
             pass
         except Exception as e:
