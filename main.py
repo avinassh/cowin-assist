@@ -654,4 +654,4 @@ If you are a developer and interested in running the bot by yourself, you may ch
 
 
 if __name__ == '__main__':
-    message_all()
+    main()
