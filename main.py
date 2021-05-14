@@ -156,8 +156,7 @@ def start(update: Update, _: CallbackContext) -> None:
     msg = """Hey there!👋
 Welcome to CoWin Assist bot. 
 
-I will weekly check slots availability in your area and alert you when one becomes available. To start either click 
-🔔 *Setup Alert* or 🔍 *Check Open Slots*.
+I will weekly check slots availability in your area and display them. To start click 🔍 *Check Open Slots*.
 
 If you are a first time user I will ask for your age and pincode."""
     update.message.reply_text(msg, reply_markup=get_main_keyboard(), parse_mode="markdown")
@@ -193,7 +192,7 @@ def cmd_button_handler(update: Update, ctx: CallbackContext) -> None:
 
 
 def get_help_text_short() -> str:
-    return """This bot will help you to check current available slots in one week and also, alert you when one becomes available. To start, either click on "Setup Alert" or "Check Open Slots". For first time users, bot will ask for age preference and pincode."""  ## noqa
+    return """This bot will help you to see current available slots by checking CoWin website. To start, click on "Check Open Slots". For first time users, bot will ask for age preference and pincode."""  ## noqa
 
 
 def get_help_text() -> str:
@@ -265,7 +264,11 @@ def check_if_preferences_are_set(update: Update, ctx: CallbackContext) -> Option
 
 
 def setup_alert_command(update: Update, ctx: CallbackContext) -> None:
-    user = check_if_preferences_are_set(update, ctx)
+    update.effective_chat.send_message("Sorry, alerts are permanently disabled")
+    return
+
+    # unreachable code, but meh
+    user = check_if_preferences_are_set(update, ctx)  ## noqa
     if not user:
         return
     user.enabled = True
@@ -615,9 +618,10 @@ def main() -> None:
     updater.dispatcher.add_handler(MessageHandler(~Filters.command, default))
     updater.dispatcher.add_error_handler(error_handler)
 
+    # Stop all alerts. Don't run the background threads.
     # launch two background threads, one for slow worker (age group 45+) and another for fast one (age group 18+)
-    threading.Thread(target=frequent_background_worker).start()
-    threading.Thread(target=periodic_background_worker).start()
+    # threading.Thread(target=frequent_background_worker).start()
+    # threading.Thread(target=periodic_background_worker).start()
 
     # Start the Bot
     updater.start_polling()
@@ -625,5 +629,21 @@ def main() -> None:
     updater.idle()
 
 
+def message_all():
+    bye = """
+Hello there!👋 
+
+Due to recent changes made by Govt for the CoWin website, the bot will not be able to send alerts efficiently. Thereby, we are disabling the alerts permanently. Sorry for the inconvenience. 
+
+If you would like to delete your data, click on /delete to permanently delete. Check /help for more available options.
+
+If you are a developer and interested in running the bot by yourself, you may check the source code on [Github](https://github.com/avinassh/cowin-assist).
+    """
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    u: User
+    for u in User.select():
+        bot.send_message(chat_id=u.chat_id, text=bye, parse_mode='markdown', disable_web_page_preview=True)
+
+
 if __name__ == '__main__':
-    main()
+    message_all()
