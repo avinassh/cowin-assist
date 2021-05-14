@@ -641,8 +641,16 @@ If you are a developer and interested in running the bot by yourself, you may ch
     """
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
     u: User
-    for u in User.select():
-        bot.send_message(chat_id=u.chat_id, text=bye, parse_mode='markdown', disable_web_page_preview=True)
+    for u in User.select().where(User.deleted_at.is_null(True)):
+        logger.info(F"sending alert to user {u.telegram_id}")
+        try:
+            bot.send_message(chat_id=u.chat_id, text=bye, parse_mode='markdown', disable_web_page_preview=True)
+        except telegram.error.Unauthorized:
+            pass
+        except Exception as e:
+            logger.info("broke while sending a message to user", exc_info=e)
+        # add a delay so tg won't block us
+        time.sleep(0.1)
 
 
 if __name__ == '__main__':
